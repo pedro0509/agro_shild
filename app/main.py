@@ -4,7 +4,10 @@ from fastapi.responses import JSONResponse
 from datetime import date, timedelta
 import pandas as pd
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
 
 from app.models.schemas import WaterBalanceRequest, WaterBalanceResponse, DashboardEntry
 from app.services.soilgrids_client import get_soil_properties
@@ -17,14 +20,21 @@ from app.core.water_balance import (
 from app.db.database import SessionLocal, WeatherHistory, SoilData
 
 app = FastAPI(title="Agro Shield - Persistência Hídrica v4")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 weather_manager = WeatherManager()
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
-    # Pega apenas a primeira mensagem de erro para simplificar
     err = exc.errors()[0]
     msg = err.get("msg", "Erro de validação")
-    # Limpa a mensagem se ela começar com "Value error, "
     msg = msg.replace("Value error, ", "")
     return JSONResponse(
         status_code=400,
@@ -38,9 +48,6 @@ def get_db():
     finally:
         db.close()
 
-@app.get("/")
-def read_root():
-    return {"status": "Agro Shield API v4 is running with Soil & Weather Persistence"}
 
 @app.post("/api/v1/cad-estimativa", response_model=WaterBalanceResponse)
 async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends(get_db)):
@@ -53,11 +60,9 @@ async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends
                 detail="A data do plantio deve ser anterior à data de hoje."
             )
             
-        # Filtro de Realidade (POC): Limita a data mínima de processamento
         DATA_LIMITE_POC = date(2026, 2, 10)
         data_efetiva_plantio = max(request.data_plantio, DATA_LIMITE_POC)
         
-        # Validação do Ciclo (150 dias)
         dap_total = (today - request.data_plantio).days
         if dap_total > 150:
             raise HTTPException(
@@ -65,7 +70,7 @@ async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends
                 detail=f"Ciclo de cultura encerrado para esta data de plantio ({dap_total} dias). O limite máximo é de 150 dias."
             )
 
-        # 2. Busca Dados de Solo (Primeiro no Banco de Dados)
+        # 2. Busca Dados de Solo
         soil = db.query(SoilData).filter(
             SoilData.latitude == request.latitude,
             SoilData.longitude == request.longitude
@@ -95,7 +100,6 @@ async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends
         ad = calculate_ad(vwc33, vwc1500, tipo_solo=soil.tipo_solo)
         
         # 3. Definição do Intervalo de Datas
-        dap = (today - data_efetiva_plantio).days
         api_limit_date = today - timedelta(days=90)
         start_weather = max(data_efetiva_plantio, api_limit_date)
         end_weather = min(request.data_plantio + timedelta(days=90), today) + timedelta(days=7)
@@ -160,11 +164,20 @@ async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends
         
         dashboard_list = []
         for i, res in enumerate(simulation_results):
+            irr_nec = 0.0
+            
+            # Lógica de Irrigação Necessária (Lâmina)
+            # Apenas para datas futuras e se ARM < 50% CAD
+            if res["date"] >= today:
+                if res["arm_mm"] < (0.5 * res["cad_diaria_mm"]):
+                    irr_nec = round(res["cad_diaria_mm"] - res["arm_mm"], 2)
+            
             dashboard_list.append(DashboardEntry(
                 date=res["date"],
                 arm_mm=res["arm_mm"],
                 chuva_mm=res["chuva_mm"],
-                eto_mm=res["eto_mm"]
+                eto_mm=res["eto_mm"],
+                irrigacao_necessaria_mm=irr_nec
             ))
             
             if res["date"] == today:
@@ -217,6 +230,10 @@ async def get_cad_estimativa(request: WaterBalanceRequest, db: Session = Depends
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+if os.path.exists("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)

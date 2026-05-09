@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+frontend/node_modules/
+frontend/dist/
+agro_shield.db
+.cache.sqlite
+node_modules/
+.pytest_cache/

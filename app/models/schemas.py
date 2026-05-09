@@ -34,6 +34,7 @@ class DashboardEntry(BaseModel):
     arm_mm: float
     chuva_mm: float
     eto_mm: float
+    irrigacao_necessaria_mm: float = 0.0
 
 class WaterBalanceResponse(BaseModel):
     coord: str
