@@ -35,7 +35,7 @@ async def get_soil_properties(lat: float, lon: float) -> Dict[str, float]:
         if not depths:
             continue
             
-        values = [d.get("values", {}).get("mean", 0) for d in depths]
+        values = [d.get("values", {}).get("mean") or 0 for d in depths]
         avg_raw_value = sum(values) / len(values)
         
         # Aplica o fator de conversão
